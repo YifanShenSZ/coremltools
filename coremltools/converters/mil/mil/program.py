@@ -4,14 +4,13 @@
 #  found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
 
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as _np
 import sympy as _sm
 
 from coremltools import _logger as logger
 from coremltools.converters.mil._deployment_compatibility import AvailableTarget as _target
-from coremltools.converters.mil.input_types import InputType
 from coremltools.converters.mil.mil.input_type import InternalInputType
 from coremltools.converters.mil.mil.ops.helper import _get_version_of_op
 from coremltools.converters.mil.mil.var import ListVar
@@ -28,18 +27,8 @@ class Program:
     def _get_opset_str_value(op):
         return f"coremltools.target.{op.name}"
 
-    @staticmethod
-    def _get_supported_dialect_opset() -> List[str]:
-        """
-        Return a list of supported dialect opsets at runtime.
-        """
-        return []
-
     def __init__(self):
-        self.main_input_types = []
-        self.main_output_types = None
         self.functions = {}
-        self.parameters = {}
         self.skip_all_passes = False
 
     def _get_dialect_namespaces(self) -> Dict[str, List[Operation]]:
@@ -49,7 +38,7 @@ class Program:
         res = defaultdict(list)
 
         def get_dialect_namespaces_block(block):
-            for op in list(block.operations):
+            for op in block.operations:
                 for b in op.blocks:
                     get_dialect_namespaces_block(b)
                 if hasattr(op, "_dialect_namespace"):
@@ -72,7 +61,7 @@ class Program:
 
     def _check_ops_version_compatibility(self, max_opset_version):
         def check_version_compatibility_block(block):
-            for op in list(block.operations):
+            for op in block.operations:
                 for b in op.blocks:
                     check_version_compatibility_block(b)
                 if not hasattr(op, "_op_variants") or not isinstance(op._op_variants, dict):
@@ -198,6 +187,24 @@ class Program:
         self._check_invalid_const_tensor_input()
         self._check_invalid_opset()
 
+    def _check_has_scope_info(self) -> None:
+        """
+        Check no ops in the program are missing scope information.
+        """
+
+        def _check_has_scope_info_block(block):
+            for op in block.operations:
+                for b in op.blocks:
+                    _check_has_scope_info_block(b)
+                if len(op.attributes["scopes"]) == 0:
+                    raise ValueError(f"op {op.name} is missing scopes attribute.")
+                for key, val in op.attributes["scopes"].items():
+                    if len(val) == 0:
+                        raise ValueError(f"scope {key} contains empty dictionary.")
+
+        for f in self.functions.values():
+            _check_has_scope_info_block(f)
+
     def add_function(self, name, ssa_func):
         if not isinstance(ssa_func, Function):
             raise ValueError("Only Function can be added to Program.")
@@ -206,20 +213,6 @@ class Program:
 
     def add_parameters(self, name, ssa_val):
         raise NotImplementedError()
-
-    def set_main_input_types(self, inputs):
-        if not isinstance(inputs, tuple):
-            raise ValueError("main inputs should be tuple of TensorType or ImageType")
-        elif not all([isinstance(inp, InputType) for inp in inputs]):
-            raise ValueError("main inputs should be tuple of InputSpec")
-        self.main_input_types = inputs
-
-    def set_main_output_types(self, outputs=None):
-        if outputs is not None:
-            if not (isinstance(outputs, list) and all([isinstance(out, InputType) for out in outputs])):
-                raise TypeError("main outputs should be a list of type ct.TensorType or ct.ImageType")
-        self.main_output_types = outputs
-
 
     def find_ops(self, prefix=None, op_type=None, exactly_one=False):
         """
@@ -244,7 +237,7 @@ class Program:
 
     def validate(self):
         for f in self.functions.values():
-            f.validate()
+            f.validate(force_validate=True)
 
     def __getitem__(self, func_name):
         if func_name not in self.functions:
@@ -255,10 +248,11 @@ class Program:
     def __repr__(self):
         return self.__str__()
 
-    def __str__(self):
+    def __str__(self, print_attr: Optional[bool] = False) -> str:
         s = ""
         for f_name, f in self.functions.items():
-            s += f.to_str(f_name)
+            s += "\n"
+            s += f.to_str(f_name, print_attr=print_attr)
         return s
 
 

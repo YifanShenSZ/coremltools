@@ -153,7 +153,11 @@ class Var:
         op = var.op
         if op is None:
             return False
-        if op.op_type.startswith("constexpr_") or var.val is not None:
+        if (
+            op.op_type.startswith("constexpr_")
+            or (op.op_type == "dequantize" and op.can_materialize_val())
+            or var.val is not None
+        ):
             return True
         flattened_inputs = op.get_flattened_inputs()
         return all([x.is_descendant_of_const for x in flattened_inputs])

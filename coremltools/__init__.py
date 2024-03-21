@@ -21,6 +21,13 @@ and .mlmodel formats. In particular, it can be used to:
 
 For more information: http://developer.apple.com/documentation/coreml
 """
+# Protobuf has a bug on x86 and linux: cannot load multiple .proto files with same name,
+# even if those .proto files are from different directories thus distinguishable
+# As a temporary workaround, we set env var PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python,
+# although we hope protobuf will resolve this issue
+import os as _os
+_os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
 from enum import Enum as _Enum
 from logging import getLogger as _getLogger
 
@@ -90,15 +97,14 @@ _LOWEST_ALLOWED_SPECIFICATION_VERSION_FOR_MILPROGRAM = _SPECIFICATION_VERSION_IO
 
 # expose sub packages as directories
 from . import converters, models, optimize, proto
-
 # expose unified converter in coremltools package level
 from .converters import ClassifierConfig
 from .converters import ColorLayout as colorlayout
 from .converters import EnumeratedShapes, ImageType, RangeDim, Shape, TensorType, convert
 from .converters.mil._deployment_compatibility import AvailableTarget as target
 from .converters.mil.mil.passes.defs import quantization as transform
-from .converters.mil.mil.passes.pass_pipeline import PassPipeline
 from .converters.mil.mil.passes.defs.quantization import ComputePrecision as precision
+from .converters.mil.mil.passes.pass_pipeline import PassPipeline
 from .models import utils
 from .models.ml_program import compression_utils
 

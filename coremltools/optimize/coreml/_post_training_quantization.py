@@ -477,7 +477,7 @@ def get_weights_metadata(mlmodel: _MLModel, weight_threshold: int = 2048):
     def get_weights_meta_block(block):
         # get the candidates ops with the given op_type
         candidate_ops = []
-        for op in list(block.operations):
+        for op in block.operations:
             for b in op.blocks:
                 get_weights_meta_block(b)
 

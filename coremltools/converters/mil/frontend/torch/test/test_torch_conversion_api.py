@@ -20,10 +20,11 @@ from coremltools._deps import (
 )
 from coremltools.converters.mil.frontend.torch.test.testing_utils import _copy_input_data
 from coremltools.converters.mil.frontend.torch.torch_op_registry import (
-    TorchOpsRegistry,
     _TORCH_OPS_REGISTRY,
+    TorchOpsRegistry,
     register_torch_op,
 )
+from coremltools.converters.mil.mil.types.symbolic import any_symbolic
 from coremltools.converters.mil.testing_reqs import backends
 from coremltools.converters.mil.testing_utils import (
     assert_cast_ops_count,
@@ -1239,7 +1240,7 @@ def rank3_input_model():
 def rank4_input_model():
     class Model(torch.nn.Module):
         def forward(self, x):
-            return x + 5.5
+            return x + 5.0
     example_input = torch.randint(0, 100, (1, 3, 10, 20), dtype=torch.float32)
     return torch.jit.trace(Model().eval(), example_input)
 
@@ -1674,6 +1675,35 @@ class TestInputOutputConversionAPI:
         assert_spec_output_image_type(mlmodel._spec, expected_feature_type=ft.ImageFeatureType.BGR)
         verify_prediction(mlmodel)
 
+        # check mlprogram can have dynamic shape image output
+        shape = ct.Shape((1, 3, ct.RangeDim(5, 10), ct.RangeDim(5, 10)))
+        mlmodel = ct.convert(
+            rank4_input_model,
+            inputs=[ct.TensorType(shape=shape, dtype=np.float32)],
+            outputs=[ct.ImageType(name="output_image", color_layout=ct.colorlayout.RGB)],
+            minimum_deployment_target=ct.target.macOS13,
+        )
+        assert_ops_in_mil_program(mlmodel, expected_op_list=["cast", "add", "cast"])
+        assert_spec_output_image_type(mlmodel._spec, expected_feature_type=ft.ImageFeatureType.RGB)
+        assert_prog_input_type(mlmodel._mil_program, expected_dtype_str="fp32")
+        assert_prog_output_type(mlmodel._mil_program, expected_dtype_str="fp32")
+        assert any_symbolic(mlmodel._mil_program.functions["main"].outputs[0].shape)
+        verify_prediction(mlmodel)
+
+        # Test output image numerical
+        sample_input = np.random.randint(low=0, high=200, size=(1, 3, 10, 10)).astype(np.float32)
+        model_output_pil_image = mlmodel.predict({"x": sample_input})["output_image"]
+        assert isinstance(model_output_pil_image, Image.Image)
+        assert model_output_pil_image.mode == "RGBA"
+        model_output_as_numpy = np.array(model_output_pil_image)[:, :, :3]  # last A channel is 255
+        model_output_as_numpy = np.transpose(model_output_as_numpy, axes=[2, 0, 1])
+        reference_output = rank4_input_model(torch.from_numpy(sample_input)).detach().numpy()
+        reference_output = np.squeeze(reference_output)
+        np.testing.assert_allclose(reference_output, model_output_as_numpy, rtol=1e-2, atol=1e-2)
+
+        a_channel = np.array(model_output_pil_image)[:, :, 3].flatten()
+        assert np.all(a_channel == 255)
+
     def test_grayscale_output(self, rank4_grayscale_input_model):
         with pytest.raises(TypeError, match="float16 dtype for outputs is only supported for deployment target >= iOS16/macOS13"):
             ct.convert(rank4_grayscale_input_model,
@@ -1811,15 +1841,24 @@ class TestGrayscaleImagePredictions:
         reference_output = rank4_grayscale_input_model(torch.from_numpy(sample_input.astype(np.float32))).detach().numpy()
         np.testing.assert_allclose(reference_output, model_output, rtol=1e-2, atol=1e-2)
 
-    def test_grayscale_output_image(self, rank4_grayscale_input_model):
-        mlmodel = ct.convert(rank4_grayscale_input_model,
-                             inputs=[ct.TensorType(name="input",
-                                                  shape=(1, 1, 10, 20))],
-                             outputs=[ct.ImageType(name="output_image",
-                                                   color_layout=ct.colorlayout.GRAYSCALE)],
-                             minimum_deployment_target=ct.target.macOS13,
-                             compute_precision=ct.precision.FLOAT32,
-                             )
+    @pytest.mark.parametrize(
+        "dynamic_shape",
+        [True, False],
+    )
+    def test_grayscale_output_image(self, rank4_grayscale_input_model, dynamic_shape):
+
+        if dynamic_shape:
+            shape = ct.Shape((1, 1, ct.RangeDim(5, 10), ct.RangeDim(5, 20)))
+        else:
+            shape = (1, 1, 10, 20)
+
+        mlmodel = ct.convert(
+            rank4_grayscale_input_model,
+            inputs=[ct.TensorType(name="input", shape=shape)],
+            outputs=[ct.ImageType(name="output_image", color_layout=ct.colorlayout.GRAYSCALE)],
+            minimum_deployment_target=ct.target.macOS13,
+            compute_precision=ct.precision.FLOAT32,
+        )
         sample_input = np.random.randint(low=0, high=200, size=(1, 1, 10, 20)).astype(np.float32)
         model_output_pil_image = mlmodel.predict({"input": sample_input})['output_image']
         assert isinstance(model_output_pil_image, Image.Image)
@@ -1829,15 +1868,27 @@ class TestGrayscaleImagePredictions:
         reference_output = np.squeeze(reference_output)
         np.testing.assert_allclose(reference_output, model_output_as_numpy, rtol=1e-2, atol=1e-2)
 
-    def test_grayscale_fp16_output_image(self, rank4_grayscale_input_model):
-        mlmodel = ct.convert(rank4_grayscale_input_model,
-                             inputs=[ct.TensorType(name="input",
-                                                  shape=(1, 1, 10, 20))],
-                             outputs=[ct.ImageType(name="output_image",
-                                                   color_layout=ct.colorlayout.GRAYSCALE_FLOAT16)],
-                             minimum_deployment_target=ct.target.macOS13,
-                             compute_precision=ct.precision.FLOAT32,
-                             )
+    @pytest.mark.parametrize(
+        "dynamic_shape",
+        [True, False],
+    )
+    def test_grayscale_fp16_output_image(self, rank4_grayscale_input_model, dynamic_shape):
+
+        if dynamic_shape:
+            shape = ct.Shape((1, 1, ct.RangeDim(5, 10), ct.RangeDim(5, 20)))
+        else:
+            shape = (1, 1, 10, 20)
+
+        mlmodel = ct.convert(
+            rank4_grayscale_input_model,
+            inputs=[ct.TensorType(name="input", shape=shape)],
+            outputs=[
+                ct.ImageType(name="output_image", color_layout=ct.colorlayout.GRAYSCALE_FLOAT16)
+            ],
+            minimum_deployment_target=ct.target.macOS13,
+            compute_precision=ct.precision.FLOAT32,
+        )
+
         sample_input = np.random.randint(low=0, high=200, size=(1, 1, 10, 20)).astype(np.float32)
         model_output_pil_image = mlmodel.predict({"input": sample_input})['output_image']
         assert isinstance(model_output_pil_image, Image.Image)

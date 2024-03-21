@@ -171,15 +171,15 @@ def _calculate_dft_matrix(
      # Use MIL ops to calculate base = torch.outer(tmp, tmp) * (2 * torch.pi / N).
     tmp_x = mb.reshape(x=tmp_x, shape=[-1, 1], before_op=before_op)
     tmp_y = mb.reshape(x=tmp_y, shape=[1, -1], before_op=before_op)
-    
+
     base = mb.matmul(x=tmp_x, y=tmp_y, before_op=before_op)
     base = mb.mul(x=base, y=2 * np.pi, before_op=before_op)
     base = mb.real_div(x=base, y=n_fft, before_op=before_op)
-    
+
     # Get real part and imaginary part separately.
     cos_base = mb.cos(x=base, before_op=before_op)
     sin_base = mb.sin(x=base, before_op=before_op)
-    
+
     return cos_base, sin_base
 
 def _fft_1d(
@@ -233,7 +233,7 @@ def _fft_1d(
     N = transposed_input_real.shape[0]
     reshaped_input_real = mb.reshape(x=transposed_input_real, shape=[N, -1], before_op=before_op)
     reshaped_input_imag = mb.reshape(x=transposed_input_imag, shape=[N, -1], before_op=before_op)
-    
+
     N = mb.cast(x=N, dtype="fp32", before_op=before_op)
     cos_base, sin_base = _calculate_dft_matrix(N, onesided=False, before_op=before_op)
 
@@ -342,7 +342,7 @@ def _stft(
         n_fft,
         onesided=is_onesided,
         before_op=before_op)
-    
+
     # create a window of centered 1s of the requested size
     if win_length:
         n_left = (n_fft.val - win_length.val) // 2
@@ -352,7 +352,7 @@ def _stft(
         if not window:
             window = mb.fill(shape=(win_length.val,), value=1., before_op=before_op)
         right = mb.fill(shape=(n_right,), value=0., before_op=before_op)
-        
+
         # concatenate
         window = mb.concat(values=(left, window, right), axis=0, before_op=before_op)
 
@@ -602,10 +602,10 @@ def _lower_complex_stft(op: Operation):
         raise ValueError("Onesided is only valid for real inputs")
 
     real, imag = _stft(
-        op.input.real if is_complex else op.input, 
-        op.input.imag if is_complex else None, 
+        op.input.real if is_complex else op.input,
+        op.input.imag if is_complex else None,
         op.n_fft, op.hop_length, op.win_length, op.window, op.normalized, op.onesided, before_op=op)
-   
+
     return _wrap_complex_output(op.outputs[0], real, imag)
 
 
@@ -637,16 +637,8 @@ def _match_and_replace_dialect_op(block, op):
 
 @block_context_manager
 def _lower_complex_dialect_ops_in_block(block):
-    def help_lower_complex_dialect_ops(block):
-        for op in list(block.operations):
-            if _match_and_replace_dialect_op(block, op):
-                return True
-        return False
-
-    block_changed = True
-    while block_changed:
-        block_changed = help_lower_complex_dialect_ops(block)
-
+    for op in list(block.operations):
+        _match_and_replace_dialect_op(block, op)
 
 @register_pass(namespace="common")
 class lower_complex_dialect_ops(AbstractGraphPass):

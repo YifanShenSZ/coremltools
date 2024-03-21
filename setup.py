@@ -5,18 +5,15 @@
 # Use of this source code is governed by a BSD-3-clause license that can be
 # found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
 
-import importlib.util
+import imp
 import os
 from setuptools import setup, find_packages
 
 # Get the coremltools version string
 coremltools_dir = os.path.join(os.path.dirname(__file__), "coremltools")
-version_file = os.path.join(coremltools_dir, "version.py")
-
-spec = importlib.util.spec_from_file_location("coremltools.version", version_file)
-version_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(version_module)
-
+version_module = imp.load_source(
+    "coremltools.version", os.path.join(coremltools_dir, "version.py")
+)
 __version__ = version_module.__version__
 
 README = os.path.join(os.getcwd(), "README.md")

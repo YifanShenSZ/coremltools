@@ -172,24 +172,26 @@ def _detect_pattern(program_op, ops_arrangement_root_var, block):
 
 @block_context_manager
 def _fuse_one_block(block, ops_arrangement, var_constraints, transform_pattern):
-    fusion_status = False
+    fusion_occurred = False
     for op in list(block.operations):
         for b in op.blocks:
             block_changed = True
             while block_changed:
                 block_changed = _fuse_one_block(b, ops_arrangement, var_constraints, transform_pattern)
 
-        ops_arrangement_root_var = list(ops_arrangement.functions.values())[0].function_inputs[0]
-        fusion_status, pattern = _detect_pattern(op, ops_arrangement_root_var, block)
+        ops_arrangement_root_var = list(
+            list(ops_arrangement.functions.values())[0].inputs.values()
+        )[0]
+        fusion_occurred, pattern = _detect_pattern(op, ops_arrangement_root_var, block)
 
-        if fusion_status:
-            fusion_status &= var_constraints(pattern)
+        if fusion_occurred:
+            fusion_occurred &= var_constraints(pattern)
 
-        if fusion_status:
+        if fusion_occurred:
             transform_pattern(pattern)
-            return fusion_status
+            return fusion_occurred
 
-    return fusion_status
+    return fusion_occurred
 
 
 def fuse_all_blocks(ops_arrangement, var_constraints, transform_pattern, prog):

@@ -90,6 +90,7 @@ class TorchQuantizationBaseTest(TorchBaseTest):
         rtol=1e-05,
         input_as_shape=True,
         minimum_deployment_target=ct.target.iOS17,
+        compute_unit=ct.ComputeUnit.CPU_ONLY,
     ):
         # TODO(rdar://108472419): properly design a random input
         if input_as_shape:
@@ -103,7 +104,7 @@ class TorchQuantizationBaseTest(TorchBaseTest):
             input_as_shape=False,
             backend=("mlprogram", "fp32"),
             use_scripting=False,
-            compute_unit=ct.ComputeUnit.CPU_ONLY,
+            compute_unit=compute_unit,
             minimum_deployment_target=minimum_deployment_target,
         )
 
@@ -399,7 +400,7 @@ class TestPytorchQuantizedOps(TorchQuantizationBaseTest):
         input_shape = [(3, 5)]
         res = self.run_compare_torch(input_shape, model)
         prog = res[1]._mil_program
-        assert get_op_types_in_program(prog) == ["constexpr_affine_dequantize", "matmul"]
+        assert get_op_types_in_program(prog) == ["constexpr_affine_dequantize", "linear"]
 
 
 @pytest.mark.skipif(not _HAS_TORCH_VISION, reason=MSG_TORCH_VISION_NOT_FOUND)

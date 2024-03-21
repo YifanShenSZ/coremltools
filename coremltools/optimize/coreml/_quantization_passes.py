@@ -24,6 +24,7 @@ from coremltools.converters.mil.mil.passes.defs.quantization import AbstractQuan
 from coremltools.converters.mil.mil.passes.helper import block_context_manager
 from coremltools.converters.mil.mil.passes.pass_registry import register_pass
 from coremltools.converters.mil.mil.types.type_mapping import nptype_from_builtin
+from coremltools.converters.mil.mil.var import Var
 from coremltools.models.neural_network.quantization_utils import _get_kmeans_lookup_table_and_weight
 from coremltools.optimize.coreml._config import (
     OpLinearQuantizerConfig,
@@ -169,28 +170,36 @@ class AbstractCompressionPass(AbstractQuantizationPass):
                 raise ValueError(f"{self.__class__.__name__} only accept {supported_type_str} type config. Got {config.__class__.__name__}.")
 
     @staticmethod
-    def pick_channnel_axis(op: Operation) -> int:
+    def select_input_output_channel_axis(op: Operation) -> Tuple[int, int]:
         """
-        By default, output channel is used as the channel axis. Here are some representative ops:
+        Here are some representative ops:
         - linear: [D_out, D_in]
         - matmul's y: [..., D_in, D_out] if transpose_y is False, else [..., D_out, D_in]
         - conv: [C_out, C_in_div_group, KH, KW]
         - conv_transpose: [C_in, C_out_div_group, KH, KW]
 
-        So the channel axis picking criterial is:
-        - For conv_transpose it's 1
-        - For matmul's y it's -1 (transpose_y=False) or -2 (transpose_y=True)
-        - For all other ops, it's 0
+        The input output channel axis selection criteria is:
+        - For conv_transpose the output channel is 1 and input channel is 0.
+        - For matmul's y:
+            - When transpose_y=False, output channel is -1 and input channel is -2
+            - When transpose_y=True, output channel is -2 and input channel is -1
+        - For all other ops, output channel is 0 and input channel is 1.
         """
-        channel_axis = 0
+        output_channel_axis, input_channel_axis = 0, 1
         var = op.outputs[0]
         if len(var.child_ops) == 1:
             child_op = var.child_ops[0]
             if child_op.op_type == "conv_transpose":
-                channel_axis = 1
+                output_channel_axis = 1
+                input_channel_axis = 0
             if child_op.op_type == "matmul" and child_op.y == var:
-                channel_axis = -1 if child_op.transpose_y else -2
-        return channel_axis
+                if child_op.transpose_y.val:
+                    output_channel_axis = -2
+                    input_channel_axis = -1
+                else:
+                    output_channel_axis = -1
+                    input_channel_axis = -2
+        return input_channel_axis, output_channel_axis
 
 
 @register_pass(namespace="compression")
@@ -367,6 +376,16 @@ class prune_weights(AbstractCompressionPass):
             raise ValueError("Invalid type of params")
         return constexpr_sparse_to_dense.decompress(params.nonzero_data, params.mask, params.shape)
 
+    @staticmethod
+    def _create_constexpr_var(op: Operation, sparse_params: SparseParams) -> Var:
+        return mb.constexpr_sparse_to_dense(
+            nonzero_data=sparse_params.nonzero_data,
+            mask=sparse_params.mask,
+            shape=np.uint32(sparse_params.shape),
+            before_op=op,
+            name=op.name + "_sparsified",
+        )
+
     def transform_op(self, op: Operation):
         op_config = self.config._get_const_op_config(op)
         if op_config is None:
@@ -411,13 +430,7 @@ class prune_weights(AbstractCompressionPass):
             return
 
         if not self.fake_compression:
-            new_var = mb.constexpr_sparse_to_dense(
-                nonzero_data=sparse_params.nonzero_data,
-                mask=sparse_params.mask,
-                shape=np.uint32(sparse_params.shape),
-                before_op=op,
-                name=op.name + "_sparsified",
-            )
+            new_var = self._create_constexpr_var(op, sparse_params)
         else:
             decompressed_val = self.decompress(sparse_params)
             new_var = mb.const(
@@ -572,6 +585,16 @@ class palettize_weights(AbstractCompressionPass):
             raise ValueError("Invalid type of params")
         return constexpr_lut_to_dense.decompress(params.lut, params.indices, params.shape)
 
+    @staticmethod
+    def _create_constexpr_var(op: Operation, lut_params: LutParams) -> Var:
+        return mb.constexpr_lut_to_dense(
+            indices=lut_params.indices,
+            lut=lut_params.lut,
+            shape=np.uint32(lut_params.shape),
+            before_op=op,
+            name=op.name + "_palettized",
+        )
+
     def transform_op(self, op: Operation):
         op_config = self.config._get_const_op_config(op)
         if op_config is None:
@@ -596,13 +619,7 @@ class palettize_weights(AbstractCompressionPass):
         )
 
         if not self.fake_compression:
-            new_var = mb.constexpr_lut_to_dense(
-                indices=lut_params.indices,
-                lut=lut_params.lut,
-                shape=np.uint32(lut_params.shape),
-                before_op=op,
-                name=op.name + "_palettized",
-            )
+            new_var = self._create_constexpr_var(op, lut_params)
         else:
             decompressed_val = self.decompress(lut_params)
             new_var = mb.const(
@@ -619,6 +636,7 @@ class palettize_weights(AbstractCompressionPass):
         )
 
         op.enclosing_block.remove_ops([op])
+
 
 @register_pass(namespace="compression")
 class linear_quantize_weights(AbstractCompressionPass):
@@ -718,8 +736,9 @@ class linear_quantize_weights(AbstractCompressionPass):
         if not self.need_compress_const(op, self.config._is_deprecated, op_config.weight_threshold):
             return
 
+        output_channel = self.select_input_output_channel_axis(op)[1]
         quant_params = self.compress(
-            op.outputs[0].val, self.pick_channnel_axis(op), op_config.mode, op_config.dtype
+            op.outputs[0].val, output_channel, op_config.mode, op_config.dtype
         )
 
         if not self.fake_compression:

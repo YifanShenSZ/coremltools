@@ -24,9 +24,6 @@ from .testing_utils import TorchBaseTest, TorchFrontend
 class TestExecutorch(TorchBaseTest):
     def test_mul(self):
         class MulModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-
             def forward(self, input, other):
                 return input * other
 
@@ -57,9 +54,6 @@ class TestExecutorch(TorchBaseTest):
 
     def test_add(self):
         class AddModule(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, x, y):
                 z = x + y
                 z = z + x
@@ -76,9 +70,6 @@ class TestExecutorch(TorchBaseTest):
 
     def test_add_mul(self):
         class AddMulModule(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, a, x, b):
                 y = torch.mm(a, x)
                 z = torch.add(y, b)

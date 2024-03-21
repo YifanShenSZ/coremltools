@@ -14,12 +14,11 @@ import numpy as _np
 import numpy as _numpy
 
 from coremltools import ComputeUnit as _ComputeUnit
+from coremltools import _logger as logger
+from coremltools import proto as _proto
 from coremltools._deps import _HAS_TF_1, _HAS_TF_2, _HAS_TORCH
 from coremltools.converters.mil.mil.program import Program as _Program
 
-from ..proto import FeatureTypes_pb2 as _ft
-from ..proto import MIL_pb2 as _MIL_pb2
-from ..proto import Model_pb2 as _Model_pb2
 from .utils import (
     _MLMODEL_EXTENSION,
     _MLPACKAGE_AUTHOR_NAME,
@@ -45,6 +44,12 @@ try:
     from ..libmodelpackage import ModelPackage as _ModelPackage
 except:
     _ModelPackage = None
+
+try:
+    from ..libcoremlpython import _MLModelProxy
+except Exception as e:
+    logger.warning(f"Failed to load _MLModelProxy: {e}")
+    _MLModelProxy = None
 
 _HAS_PIL = True
 try:
@@ -131,11 +136,6 @@ class _FeatureDescription:
 
 
 def _get_proxy_and_spec(filename, compute_units, skip_model_load=False):
-    try:
-        from ..libcoremlpython import _MLModelProxy
-    except Exception:
-        _MLModelProxy = None
-
     filename = _os.path.expanduser(filename)
     specification = _load_spec(filename)
 
@@ -382,7 +382,7 @@ class MLModel:
             self.__proxy__, self._spec, self._framework_error = _get_proxy_and_spec(
                 model, compute_units, skip_model_load=skip_model_load,
             )
-        elif isinstance(model, _Model_pb2.Model):
+        elif isinstance(model, _proto.Model_pb2.Model):
             if does_model_contain_mlprogram(model):
                 if model.WhichOneof("Type") == "mlProgram" and weights_dir is None:
                     raise Exception(
@@ -600,15 +600,6 @@ class MLModel:
                     "Model prediction is only supported on macOS version 10.13 or later."
                 )
 
-            try:
-                from ..libcoremlpython import _MLModelProxy
-            except Exception as e:
-                print("Exception loading model proxy: %s\n" % e)
-                _MLModelProxy = None
-            except:
-                print("Exception while loading model proxy.\n")
-                _MLModelProxy = None
-
             if not _MLModelProxy:
                 raise Exception("Unable to load CoreML.framework. Cannot make predictions.")
             elif (
@@ -670,9 +661,9 @@ class MLModel:
         build_info_proto = ml_program_attributes["buildInfo"]
 
         # Set ValueType to dictionary of string to string
-        str_type = _MIL_pb2.ValueType()
-        str_type.tensorType.dataType = _MIL_pb2.DataType.STRING
-        dict_type_str_to_str = _MIL_pb2.ValueType()
+        str_type = _proto.MIL_pb2.ValueType()
+        str_type.tensorType.dataType = _proto.MIL_pb2.DataType.STRING
+        dict_type_str_to_str = _proto.MIL_pb2.ValueType()
         dict_type_str_to_str.dictionaryType.keyType.CopyFrom(str_type)
         dict_type_str_to_str.dictionaryType.valueType.CopyFrom(str_type)
         build_info_proto.type.CopyFrom(dict_type_str_to_str)
@@ -680,7 +671,7 @@ class MLModel:
         # Copy the metadata
         build_info_dict = build_info_proto.immediateValue.dictionary
         for k, v in metadata.items():
-            key_pair = _MIL_pb2.DictionaryValue.KeyValuePair()
+            key_pair = _proto.MIL_pb2.DictionaryValue.KeyValuePair()
             key_pair.key.immediateValue.tensor.strings.values.append(k)
             key_pair.key.type.CopyFrom(str_type)
             key_pair.value.immediateValue.tensor.strings.values.append(v)
@@ -728,16 +719,25 @@ class MLModel:
                 if not isinstance(input_val, _PIL_IMAGE.Image):
                     msg = "Image input, '{}' must be of type PIL.Image.Image in the input dict"
                     raise TypeError(msg.format(input_desc.name))
-                if input_desc.type.imageType.colorSpace in (_ft.ImageFeatureType.BGR, _ft.ImageFeatureType.RGB):
-                    if input_val.mode != 'RGB':
+                if input_desc.type.imageType.colorSpace in (
+                    _proto.FeatureTypes_pb2.ImageFeatureType.BGR,
+                    _proto.FeatureTypes_pb2.ImageFeatureType.RGB,
+                ):
+                    if input_val.mode != "RGB":
                         msg = "RGB/BGR image input, '{}', must be of type PIL.Image.Image with mode=='RGB'"
                         raise TypeError(msg.format(input_desc.name))
-                elif input_desc.type.imageType.colorSpace == _ft.ImageFeatureType.GRAYSCALE:
-                    if input_val.mode != 'L':
+                elif (
+                    input_desc.type.imageType.colorSpace
+                    == _proto.FeatureTypes_pb2.ImageFeatureType.GRAYSCALE
+                ):
+                    if input_val.mode != "L":
                         msg = "GRAYSCALE image input, '{}', must be of type PIL.Image.Image with mode=='L'"
                         raise TypeError(msg.format(input_desc.name))
-                elif input_desc.type.imageType.colorSpace == _ft.ImageFeatureType.GRAYSCALE_FLOAT16:
-                    if input_val.mode != 'F':
+                elif (
+                    input_desc.type.imageType.colorSpace
+                    == _proto.FeatureTypes_pb2.ImageFeatureType.GRAYSCALE_FLOAT16
+                ):
+                    if input_val.mode != "F":
                         msg = "GRAYSCALE_FLOAT16 image input, '{}', must be of type PIL.Image.Image with mode=='F'"
                         raise TypeError(msg.format(input_desc.name))
 

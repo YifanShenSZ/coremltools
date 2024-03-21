@@ -634,6 +634,7 @@ class TestElementwiseUnary:
             return mb.erf(x=x)
 
         ops = list(prog.functions.values())[0].operations
+        ops = list(ops)
         assert len(ops) == 2
         assert ops[0].op_type == "const"
         erf_op = ops[1]

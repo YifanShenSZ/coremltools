@@ -8,9 +8,11 @@ import pytest
 
 import coremltools as ct
 from coremltools import _logger as logger
+from coremltools.converters.mil import mil
 from coremltools.converters.mil.mil import Builder as mb
 from coremltools.converters.mil.mil import Function, Program, types
 from coremltools.converters.mil.mil.passes.tests.test_passes import CONSTEXPR_FUNCS
+from coremltools.converters.mil.mil.scope import ScopeInfo, ScopeSource
 
 np.random.seed(0)
 
@@ -375,7 +377,7 @@ class TestMILBuilderAPI:
         def func_3(x):
             return x
 
-        prog = Program()
+        prog = mil.Program()
         prog.add_function("func_1", func_1)
         prog.add_function("func_2", func_2)
         prog.add_function("func_3", func_3)
@@ -397,12 +399,12 @@ class TestMILBuilderAPI:
 
         err_msg = "all functions must have the same opset_version."
 
-        prog = Program()
+        prog = mil.Program()
         prog.add_function("func_1", func_1)
         with pytest.raises(ValueError, match=err_msg):
             prog.add_function("func_2", func_2)
 
-        prog = Program()
+        prog = mil.Program()
         prog.add_function("func_2", func_2)
         with pytest.raises(ValueError, match=err_msg):
             prog.add_function("func_1", func_1)
@@ -553,21 +555,503 @@ class TestMILBasic:
                     prog,
                     convert_to="mlprogram",
                     minimum_deployment_target=ct.target.iOS16,
+                    pass_pipeline=ct.PassPipeline.EMPTY,
                     compute_units=ct.ComputeUnit.CPU_ONLY,
                     compute_precision=compute_precision,
                 )
 
-        # If the transpose is removed by optimization passes, the conversion goes through
+        # If the transpose is removed by graph pass merge_affine_dequantize_with_consecutive_ops,
+        # the conversion goes through
         @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
         def prog(x):
             constexpr = CONSTEXPR_FUNCS["constexpr_affine_dequantize"]((4, 3))
             constexpr = mb.transpose(x=constexpr, perm=[0, 1])
             return mb.linear(x=x, weight=constexpr)
 
-            mlmodel = ct.convert(
-                prog,
-                convert_to="mlprogram",
-                minimum_deployment_target=ct.target.iOS16,
-                compute_units=ct.ComputeUnit.CPU_ONLY,
-                compute_precision=compute_precision,
-            )
+        mlmodel = ct.convert(
+            prog,
+            convert_to="mlprogram",
+            minimum_deployment_target=ct.target.iOS16,
+            compute_units=ct.ComputeUnit.CPU_ONLY,
+            compute_precision=compute_precision,
+        )
+
+class TestScope:
+    @staticmethod
+    def test_basic_single():
+        # single scope with scope_name and scope_type
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data="module_1"),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="Module1"),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["module_1"]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["Module1"]
+
+        # single scope with scope_name and scope_type with list type
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1"]),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1"]),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["module_1"]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["Module1"]
+
+        # single scope with scope_type and no scope_name
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1"]),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["module_1"]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op.attributes["scopes"]
+
+        # nested scope in a single mb.scope call. Both scope_name and scope_type provided
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1", "module_2"]
+                ),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1", "Module2"]),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+            "Module2",
+        ]
+
+        # nested scope in a single mb.scope call. Only scope_type provided
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1", "module_2"]
+                ),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op.attributes["scopes"]
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["", ""]),
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1", "module_2"]
+                ),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["", ""]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+
+    @staticmethod
+    def test_basic_nested():
+        # nested scope with scope_name and scope_type
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data="module_1"),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="Module1"),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data="module_2"),
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="Module2"),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+            "Module2",
+        ]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["module_1"]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["Module1"]
+
+        # nested scope with scope_name and scope_type with list type
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1"]),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1"]),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_2"]),
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module2"]),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+            "Module2",
+        ]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["module_1"]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["Module1"]
+
+        # nested scope with scope_name and no scope_type
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1"]),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_2"]),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op_1.attributes["scopes"]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op_2.attributes["scopes"]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["module_1"]
+
+        # nested scope in a nested mb.scope call. Both scope_name and scope_type provided
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1", "module_2"]
+                ),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1", "Module2"]),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data="module_3"),
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="Module3"),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+            "module_2",
+            "module_3",
+        ]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+            "Module2",
+            "Module3",
+        ]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+            "Module2",
+        ]
+
+        # nested scope in a single mb.scope call. Only scope_type provided
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1", "module_2"]
+                ),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_3"]),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op_1.attributes["scopes"]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+            "module_3",
+        ]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op_2.attributes["scopes"]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_1", "module_2"]
+                ),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["", ""]),
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["module_3"]),
+                ):
+                    x = mb.add(x=x, y=5.4)
+                return mb.add(x=x, y=0.0)
+
+        add_op_1 = prog.find_ops(op_type="add")[0]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+            "module_3",
+        ]
+        assert add_op_1.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["", ""]
+
+        add_op_2 = prog.find_ops(op_type="add")[1]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op_2.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["", ""]
+
+
+    @staticmethod
+    def test_invalid_dtype_error_out():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with pytest.raises(
+                ValueError,
+                match="TORCHSCRIPT_MODULE_TYPE and TORCHSCRIPT_MODULE_NAME scope must be type of List\[str\]. Got element 9 with type \<class 'int'\>.",
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["m1", 9]),
+                    ScopeInfo(
+                        source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1", "Module2"]
+                    ),
+                ):
+                    return mb.add(x=x, y=5.4)
+
+            with pytest.raises(
+                ValueError,
+                match="TORCHSCRIPT_MODULE_TYPE and TORCHSCRIPT_MODULE_NAME scope must be type of List\[str\]. Got element 0 with type \<class 'int'\>.",
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["m1", "m2"]),
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1", 0]),
+                ):
+                    return mb.add(x=x, y=5.4)
+            return x
+
+    @staticmethod
+    def test_empty_scope():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope():
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert ScopeSource.TORCHSCRIPT_MODULE_TYPE not in add_op.attributes["scopes"]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op.attributes["scopes"]
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope():
+                with mb.scope():
+                    return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert ScopeSource.TORCHSCRIPT_MODULE_TYPE not in add_op.attributes["scopes"]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op.attributes["scopes"]
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope():
+                with mb.scope(ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="m1")):
+                    with mb.scope():
+                        return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == ["m1"]
+        assert ScopeSource.TORCHSCRIPT_MODULE_NAME not in add_op.attributes["scopes"]
+
+
+    @staticmethod
+    def test_empty_scope_type_error_out():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with pytest.raises(
+                ValueError, match="TORCHSCRIPT_MODULE_TYPE scope info cannot contains empty string."
+            ):
+                with mb.scope(ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="")):
+                    with mb.scope():
+                        return mb.add(x=x, y=5.4)
+
+            with pytest.raises(
+                ValueError, match="TORCHSCRIPT_MODULE_TYPE scope info cannot contains empty string."
+            ):
+                with mb.scope(
+                    ScopeInfo(
+                        source=ScopeSource.TORCHSCRIPT_MODULE_TYPE,
+                        data=["a", ""],
+                    )
+                ):
+                    with mb.scope():
+                        return mb.add(x=x, y=5.4)
+            return x
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE,
+                    data=["module_1"],
+                )
+            ):
+                with pytest.raises(
+                    ValueError,
+                    match="TORCHSCRIPT_MODULE_TYPE scope info cannot contains empty string.",
+                ):
+                    with mb.scope(
+                        ScopeInfo(
+                            source=ScopeSource.TORCHSCRIPT_MODULE_TYPE,
+                            data=[""],
+                        )
+                    ):
+                        return mb.add(x=x, y=5.4)
+                with pytest.raises(
+                    ValueError,
+                    match="TORCHSCRIPT_MODULE_TYPE scope info cannot contains empty string.",
+                ):
+                    with mb.scope(
+                        ScopeInfo(
+                            source=ScopeSource.TORCHSCRIPT_MODULE_TYPE,
+                            data=["a", "", ""],
+                        )
+                    ):
+                        return mb.add(x=x, y=5.4)
+            return x
+
+    @staticmethod
+    def test_white_space_handling():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=[" module_1  "]),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=[" Module1"]),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == [
+            "module_1",
+        ]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "Module1",
+        ]
+
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=[" Module1   ", " "]),
+                ScopeInfo(
+                    source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=[" module_1 ", " module_2 "]
+                ),
+            ):
+                return mb.add(x=x, y=5.4)
+
+        add_op = prog.find_ops(op_type="add")[0]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_TYPE] == [
+            "module_1",
+            "module_2",
+        ]
+        assert add_op.attributes["scopes"][ScopeSource.TORCHSCRIPT_MODULE_NAME] == ["Module1", ""]
+
+    @staticmethod
+    def test_duplicated_scope_source_error_out():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with pytest.raises(
+                ValueError, match="Scope source ScopeSource.TORCHSCRIPT_MODULE_TYPE duplicated."
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="a1"),
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data="a2"),
+                ):
+                    return mb.add(x=x, y=5.4)
+            return x
+
+    @staticmethod
+    def test_check_prog_has_scope_error_out():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with mb.scope(
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1"]),
+                ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_TYPE, data=["Module1"]),
+            ):
+                x = mb.add(x=x, y=5.4)
+            x = mb.relu(x=x, name="invalid_op")
+            return x
+
+        with pytest.raises(ValueError, match="op invalid_op is missing scopes attribute."):
+            prog._check_has_scope_info()
+
+    @staticmethod
+    def test_invalid_scope_source_type():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with pytest.raises(TypeError, match="'source' must be \<enum 'ScopeSource'\>"):
+                with mb.scope(
+                    ScopeInfo(source="invalid_source", data="a1"),
+                ):
+                    return mb.add(x=x, y=5.4)
+            return x
+
+    @staticmethod
+    def test_invalid_scope_info_type():
+        @mb.program(input_specs=[mb.TensorSpec(shape=(2, 3))])
+        def prog(x):
+            with pytest.raises(
+                ValueError,
+                match="mb.scope only accepts inputs of type ScopeInfo. Got \<class 'str'\>.",
+            ):
+                with mb.scope(
+                    ScopeInfo(source=ScopeSource.TORCHSCRIPT_MODULE_NAME, data=["module_1"]),
+                    "invalid",
+                ):
+                    return mb.add(x=x, y=5.4)
+            return x
