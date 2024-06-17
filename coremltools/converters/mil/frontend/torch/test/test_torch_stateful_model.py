@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import coremltools as ct
+from coremltools._deps import _HAS_EXECUTORCH
 from coremltools.converters.mil.mil import types
 from coremltools.converters.mil.mil.types.symbolic import any_symbolic
 from coremltools.converters.mil.testing_reqs import compute_units
@@ -23,6 +24,14 @@ from coremltools.converters.mil.testing_utils import (
 from coremltools.proto import FeatureTypes_pb2 as ft
 
 torch = pytest.importorskip("torch")
+
+from .testing_utils import TorchFrontend
+
+frontends = [TorchFrontend.TORCHSCRIPT]
+
+if _HAS_EXECUTORCH:
+    import executorch.exir
+    frontends.append(TorchFrontend.EXIR)
 
 
 @pytest.fixture
@@ -228,10 +237,11 @@ def rank4_grayscale_input_model_with_buffer():
 )
 class TestStateConversionAPI:
     @pytest.mark.parametrize(
-        "compute_unit",
-        compute_units,
+        "compute_unit, frontend",
+        # itertools.product(compute_units, frontends),
+        itertools.product(compute_units, [TorchFrontend.EXIR]),
     )
-    def test_state_model_api_example(self, compute_unit):
+    def test_state_model_api_example(self, compute_unit, frontend):
         """
         Test the public API example.
         """
@@ -246,8 +256,18 @@ class TestStateConversionAPI:
                 self.state_1.add_(x)
                 return self.state_1
 
-        model = UpdateBufferModel()
-        traced_model = torch.jit.trace(model, torch.tensor([1, 2, 3], dtype=torch.float32))
+        torch_model = UpdateBufferModel()
+
+        example_inputs = (torch.tensor([1, 2, 3], dtype=torch.float32),)
+        if frontend == TorchFrontend.TORCHSCRIPT:
+            exported_torch_model = torch.jit.trace(torch_model, example_inputs)
+        elif frontend == TorchFrontend.EXIR:
+            exported_torch_model = torch.export.export(torch_model, example_inputs)
+            exported_torch_model = executorch.exir.to_edge(exported_torch_model).exported_program()
+        else:
+            raise ValueError(
+                f"Unknown value of frontend. Needs to be either TorchFrontend.TORCHSCRIPT or TorchFrontend.EXIR. Provided: {frontend}"
+            )
 
         inputs = [
             ct.TensorType(shape=(3,)),
@@ -261,13 +281,15 @@ class TestStateConversionAPI:
             ),
         ]
         mlmodel = ct.convert(
-            traced_model,
+            exported_torch_model,
             inputs=inputs,
             states=states,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
             compute_units=compute_unit,
         )
+        import pdb
+        pdb.set_trace()
 
         verify_prediction(mlmodel)
 
