@@ -34,7 +34,7 @@ from coremltools.converters.mil.mil.types.type_mapping import builtin_to_string
 from coremltools.converters.mil.mil.var import ListVar, Var
 
 from .._utils import build_einsum_mil, value_at
-from .internal_graph import InternalTorchIRGraph
+from .internal_graph import InternalTorchIRGraph, InternalTorchIRNode
 from .torch_op_registry import _TORCH_OPS_REGISTRY, register_torch_op
 from .utils import (
     NUM_TO_DTYPE_STRING,
@@ -79,8 +79,7 @@ def convert_nodes(
     Iterate over the nodes of a graph or block and convert to MIL.
 
     Arguments:
-        context: A TranscriptionContext object to pull node inputs and
-            assign node outputs.
+        context: A TranscriptionContext object to pull node inputs and assign node outputs.
         graph: An InternalTorchIRGraph or InternalTorchIRBlock object.
     """
     for node in _tqdm(graph.nodes, desc="Converting PyTorch Frontend ==> MIL Ops", unit=" ops"):
@@ -97,13 +96,12 @@ def convert_nodes(
             break
 
 
-def convert_single_node(context, node):
+def convert_single_node(context: TranscriptionContext, node: InternalTorchIRNode) -> None:
     """
     Converts a single lowered PyTorch op to MIL.
 
     Arguments:
-        context: A TranscriptionContext object to pull node inputs and
-            assign node outputs.
+        context: A TranscriptionContext object to pull node inputs and assign node outputs.
         node: lowered PyTorch op to convert.
     """
     op_lookup = node.kind
@@ -142,8 +140,65 @@ def convert_single_node(context, node):
             context.quant_context.maybe_handle_quantized_inputs(node)
         context.prepare_for_conversion(node)
         add_op(context, node)
+
+    # Process in-place op
+    if context.frontend == TorchFrontend.TORCHSCRIPT:
+        # Torch script has in-place op, so process it
         if _TORCH_OPS_REGISTRY.is_inplace_op(op_lookup):
-            context.process_inplace_op(node)
+            with mb.scope(*scopes):
+                context.process_inplace_op(node)
+    elif context.frontend == TorchFrontend.EXIR:
+        # EXIR is functional, i.e. does not have in-place op, instead
+        # EXIR represents stateful execution as buffer mutation at output,
+        # i.e. buffer.copy_(...) at the end of EXIR program,
+        # so in principle we can write state at the end of pymil function analogously.
+        # However, in practise, we update state immediately following the functional op
+        # for 2 reasons
+        # 1. PyMIL stores ops in a list rather than a graph,
+        #    i.e. PyMIL program does not natively keep ops topologically ordered,
+        #    so translating this buffer.copy_(...) immediately following the functional op
+        #    keeps the PyMIL op list topologically ordered
+        # 2. As a functional-graph framework, Core ML represents in-place operation as
+        #        read_state -> functional operation -> write_state
+        #    When the output of the in-place operation is used downstream,
+        #    there are 2 possible patterns, one canonical
+        #        read_state -> functional operation -> write_state -> read_state -> ...
+        #    the other non-canonical
+        #                                        |-> write_state
+        #    read_state -> functional operation -|
+        #                                        |-> ...
+        #    We override functional operation output var in context with update,
+        #    so canonical pattern is used
+        mutated_output_names = set()
+        for (
+            output_name,
+            buffer_name,
+        ) in context.torch_graph.output_name_to_target_buffer_name.items():
+            if output_name in context:
+                output_var = context[output_name]
+                buffer_var = context[buffer_name]
+                with mb.scope(
+                    ScopeInfo(
+                        source=ScopeSource.EXIR_STACK_TRACE, data=[node.meta.get("stack_trace")]
+                    ),
+                    ScopeInfo(source=ScopeSource.EXIR_DEBUG_HANDLE, data=[None]),
+                ):
+                    # As of iOS 18, Core ML state can only be fp16
+                    # In torch converter, we convert everything under fp32
+                    # (then cast everything to fp16 if specified fp16 compute precision)
+                    # so we need to (temporarily) cast value to fp16, then cast update to fp32
+                    cast_value = mb.cast(x=output_var, dtype=builtin_to_string(buffer_var.dtype))
+                    update = mb.coreml_update_state(state=buffer_var, value=cast_value)
+                    cast_update = mb.cast(
+                        x=update, dtype=builtin_to_string(output_var.dtype), name=output_name
+                    )
+                context.add(cast_update, override=True)
+                context.name_to_source_state[output_name] = buffer_var
+                mutated_output_names.add(output_name)
+        for output_name in mutated_output_names:
+            context.torch_graph.output_name_to_target_buffer_name.pop(output_name)
+    else:
+        raise ValueError(f"Invalid PyTorch frontend {context.frontend}")
 
 
 def convert_block(context, block, inputs):
@@ -968,8 +1023,12 @@ def linear(context, node):
     inputs = _get_inputs(context, node, expected=[2, 3])
     x = inputs[0]
     W = inputs[1]
-    x, W = promote_input_dtypes([x, W])
     bias = inputs[2] if len(node.inputs) == 3 else None
+    if bias is not None:
+        x, W, bias = promote_input_dtypes([x, W, bias])
+    else:
+        x, W = promote_input_dtypes([x, W])
+
     res = _create_linear_layer(x, W, bias)
     context.add(res, torch_name=node.name)
 
@@ -3968,8 +4027,11 @@ def index_put(context, node):
             )
 
         begin = [0] * x.rank
-        end = list(x.shape)
-        stride = [1] * x.rank
+        begin = [np.float16(0.0)] * x.rank
+        # end = list(x.shape)
+        end = [np.float16(size) for size in x.shape]
+        # stride = [1] * x.rank
+        stride = np.ones(x.rank, dtype=np.int16)
         begin_mask = [True] * x.rank
         end_mask = [True] * x.rank
         # note: in torch slice, an indexed dim becomes size 1, rather than squeezed, e.g.
@@ -3981,13 +4043,17 @@ def index_put(context, node):
             if index is not None:
                 if len(index.shape) > 0:
                     index = mb.squeeze(x=index)
+                index = mb.cast(x=index, dtype="fp16")
                 begin[dim] = index
-                end[dim] = mb.add(x=index, y=1)
+                # end[dim] = mb.add(x=index, y=1)
+                end[dim] = mb.add(x=index, y=np.float16(1.0))
                 begin_mask[dim] = False
                 end_mask[dim] = False
                 is_dim_unity[dim] = True
         begin = mb.concat(values=begin, axis=0)
         end = mb.concat(values=end, axis=0)
+        begin = mb.cast(x=begin, dtype="int16")
+        end = mb.cast(x=end, dtype="int16")
 
         expected_values_shape = []
         for dim in range(x.rank):
@@ -4189,13 +4255,14 @@ def index(context, node):
     if len(indices_axes) == 1:
         axis = indices_axes[0]
         indices = valid_indices[0]
-        if is_current_opset_version_compatible_with(target.iOS17):
-            # IOS17 `gather` behaviour is undefined for negative indices.
-            indices = mb.select(
-                cond=mb.greater_equal(x=indices, y=0),
-                a=indices,
-                b=mb.add(x=indices, y=value_at(mb.shape(x=x), axis)),
-            )
+        # Can we dodge these ANE-falling-off non-negativity guard?
+        # if is_current_opset_version_compatible_with(target.iOS17):
+        #     # IOS17 `gather` behaviour is undefined for negative indices.
+        #     indices = mb.select(
+        #         cond=mb.greater_equal(x=indices, y=0),
+        #         a=indices,
+        #         b=mb.add(x=indices, y=value_at(mb.shape(x=x), axis)),
+        #     )
         x = _utils._construct_gather_op("gather", x, indices, axis, name=node.name)
         context.add(x)
         return
@@ -5023,6 +5090,7 @@ def meshgrid(context, node):
 # Defines all the nodes that are noOps
 @register_torch_op(
     torch_alias=[
+        "alias_copy",
         "clone",
         "contiguous",
         "detach",
@@ -5030,6 +5098,7 @@ def meshgrid(context, node):
         "dropout",
         "feature_dropout",
         "lift_fresh",
+        "lift_fresh_copy",
     ]
 )
 def noop(context, node):
@@ -5493,7 +5562,7 @@ def ceil(context, node):
     context.add(mb.ceil(x=inputs[0], name=node.name))
 
 
-@register_torch_op(torch_alias=["clip"])
+@register_torch_op
 def clamp(context, node):
     inputs = _get_inputs(context, node, expected=[1,2,3])
     x = inputs[0]

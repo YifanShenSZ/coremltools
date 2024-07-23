@@ -1033,6 +1033,8 @@ class reorder_lut_per_channel_scale(AbstractGraphPass):
             # Only the scale on output axis could be moved to get mathematically equivalent results.
             scale_val: np.ndarray = scale_op.scale.val
             output_axis = optimize_utils.select_input_output_channel_axis(scale_op)[1]
+            if output_axis is None:
+                return
             if output_axis < 0:
                 output_axis += len(scale_val.shape)
             for axis, dim_size in enumerate(scale_val.shape):

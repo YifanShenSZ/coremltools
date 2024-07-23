@@ -515,9 +515,15 @@ class add_int16_cast(CastTypeQuantization):
       to int16/uint16 dtype.
     - For each output of dtype int16/uint16, inject a "cast" op to change it back to int32.
     Notice that the cast will not be inserted if the const value is out of int16/uint16 range.
+
+    Q: What if an op supports 16-bit only in later iOS?
+       For example, gather started to support 16-bit from iOS16
+    A: CastTypeQuantization.should_cast_parameter will confirm type domain,
+       so we just try, and rely on it to reject if 16-bit is not supported
+       For example, CastTypeQuantization.should_cast_parameter will reject iOS15 gather
     """
     # Ops that prefer int16 params.
-    _PREFER_INT16_OPS: Set[str] = {"gather", "gather_along_axis", "gather_nd"}
+    _PREFER_INT16_OPS: Set[str] = {"gather", "gather_along_axis", "gather_nd", "squeeze"}
 
     def __init__(self, op_selector=None):
         super().__init__(op_selector=op_selector)

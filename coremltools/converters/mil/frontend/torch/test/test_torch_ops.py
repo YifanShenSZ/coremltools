@@ -1389,6 +1389,32 @@ class TestGroupNorm(TorchBaseTest):
 
 class TestLinear(TorchBaseTest):
     @pytest.mark.parametrize(
+        "compute_unit, backend",
+        itertools.product(
+            compute_units,
+            backends,
+        ),
+    )
+    def test_linear_fp16(self, compute_unit, backend):
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4, dtype=torch.float16)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        model = Model()
+        self.run_compare_torch(
+            torch.randn(4, 4, dtype=torch.float16),
+            model,
+            backend=backend,
+            compute_unit=compute_unit,
+            input_as_shape=False,
+            minimum_deployment_target=ct.target.iOS16,
+        )
+
+    @pytest.mark.parametrize(
         "compute_unit, backend, in_features, out_features, bias",
         itertools.product(
             compute_units,
@@ -8225,6 +8251,8 @@ class TestIndexPut(TorchBaseTest):
         class IndexPutModel(torch.nn.Module):
             def forward(self, x):
                 mask = torch.tensor([True, False, False, False, True, True]).view(3, 2)
+                if frontend == TorchFrontend.EXIR:
+                    x = x.clone()
                 if rank == 0:
                     x[mask] = 0.0
                 if rank == 1:
@@ -8261,6 +8289,8 @@ class TestIndexPut(TorchBaseTest):
         class IndexPutModel(torch.nn.Module):
             def forward(self, x, y):
                 mask = y > 1
+                if frontend == TorchFrontend.EXIR:
+                    x = x.clone()
                 x[y > 1] = 0.0
                 return x
 
@@ -8300,6 +8330,8 @@ class TestIndexPut(TorchBaseTest):
 
         class IndexPutModel(torch.nn.Module):
             def forward(self, x, indices, values):
+                if frontend == TorchFrontend.EXIR:
+                    x = x.clone()
                 x.index_put_(tuple(indices.t()), values, accumulate=accumulate)
                 return x
 
@@ -8481,6 +8513,8 @@ class TestIndexPut(TorchBaseTest):
 
         class IndexPutModel(torch.nn.Module):
             def forward(self, x):
+                if frontend == TorchFrontend.EXIR:
+                    x = x.clone()
                 x.index_put_(
                     indices=(torch.LongTensor([0, -1]), torch.LongTensor([-2, 1])),
                     values=torch.Tensor([1.0, 5.0]),
@@ -8519,6 +8553,8 @@ class TestIndexPut(TorchBaseTest):
 
         class IndexPutModel(torch.nn.Module):
             def forward(self, x, indices, values):
+                if frontend == TorchFrontend.EXIR:
+                    x = x.clone()
                 x.index_put_(tuple(indices.t()), values, accumulate=accumulate)
                 return x
 

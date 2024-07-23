@@ -197,6 +197,14 @@ except:
 else:
     _HAS_SCIPY = True
 
+# ---------------------------------------------------------------------------------------
+try:
+    import transformers
+except:
+    _HAS_HF = False
+else:
+    _HAS_HF = True
+
 # General utils
 def version_ge(module, target_version):
     """

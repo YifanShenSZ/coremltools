@@ -17,7 +17,6 @@ from coremltools.converters.mil.mil.passes.helper import classproperty as _class
 from coremltools.converters.mil.mil.passes.pass_registry import PASS_REGISTRY
 
 _COMMON_PASSES: List[Text] = [
-    "common::reorder_lut_per_channel_scale",
     "common::lower_complex_dialect_ops",
     "common::update_output_dtypes",
     "common::cast_optimization",

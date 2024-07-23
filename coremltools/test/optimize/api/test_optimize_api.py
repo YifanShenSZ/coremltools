@@ -231,7 +231,7 @@ class TestOptimizeTorchAPIOverview:
 
         # Initialize the palettizer
         config = DKMPalettizerConfig(
-            global_config=ModuleDKMPalettizerConfig(n_bits=4, cluster_dim=4)
+            global_config=ModuleDKMPalettizerConfig(n_bits=4, cluster_dim=2)
         )
 
         palettizer = DKMPalettizer(model, config)
@@ -258,7 +258,7 @@ class TestOptimizeTorchAPIOverview:
             traced_model,
             inputs=[ct.TensorType(shape=example_input.shape)],
             pass_pipeline=ct.PassPipeline.DEFAULT_PALETTIZATION,
-            minimum_deployment_target=ct.target.iOS16,
+            minimum_deployment_target=ct.target.iOS18,
         )
         assert coreml_model is not None
         output_file = tempfile.NamedTemporaryFile(suffix=".mlpackage").name

@@ -1266,7 +1266,6 @@ def _convert_model_spec_to_pymil_prog(
     mlmodel: "_ct.models.MLModel",
     specification_version: int,
     pymil_load_func: _Callable,
-    skip_model_load: bool = False,
 ) -> _Program:
     """
     A utility that converts an ``mlprogram`` model into PyMIL program.
@@ -1296,7 +1295,6 @@ def _convert_model_spec_to_pymil_prog(
         model_spec=model_spec,
         specification_version=specification_version,
         file_weights_dir=mlmodel.weights_dir,
-        skip_model_load=skip_model_load,
     )
     return prog
 
@@ -1305,26 +1303,27 @@ def _apply_graph_pass(
     mlmodel: "_ct.models.MLModel",
     graph_pass: _AbstractGraphPass,
     spec_version: int = _SPECIFICATION_VERSION_IOS_16,
-    skip_model_load: bool = False,
+    skip_model_load: _Optional[bool] = None,
     pymil_load_func: _Callable = _milproto_to_pymil.load,
     return_pymil_prog: bool = False,
 ) -> _Union["_ct.models.MLModel", _Program]:
     # We do the lazy import to prevent circular import
     from coremltools.converters.mil.converter import mil_convert as _mil_convert
 
+    if skip_model_load is None:
+        # Determine if skip the model load by the original mlmodel.
+        skip_model_load = mlmodel.__proxy__ is None
+
     # Utility function which compresses a Core ML model
     # Converts the full precision mlmodel into a pymil program
     model_spec = mlmodel.get_spec()
     specification_version = max(model_spec.specificationVersion, spec_version)
-    prog = _convert_model_spec_to_pymil_prog(
-        mlmodel, specification_version, pymil_load_func, skip_model_load
-    )
+    prog = _convert_model_spec_to_pymil_prog(mlmodel, specification_version, pymil_load_func)
 
     # Apply graph pass.
-    print(type(graph_pass))
     assert isinstance(
         graph_pass, _AbstractGraphPass
-    ), "graph pass must be an AbstractGraphPass instance"
+    ), f"graph pass must be an AbstractGraphPass instance, but got {type(graph_pass)}"
     graph_pass.apply(prog)
 
     # An early return can prevent running all other optimization paths triggered by _mil_convert.
@@ -1497,6 +1496,15 @@ class MultiFunctionDescriptor:
         del self._name_to_source_function[function_name]
 
 
+def _multifunction_program_append_unifunction_program(
+    multifunction_prog: _mil.Program,
+    unifunction_prog: _mil.Program,
+    src_func_name: str,
+    target_func_name: str,
+) -> None:
+    multifunction_prog.add_function(target_func_name, unifunction_prog.functions[src_func_name])
+
+
 def save_multifunction(
     desc: MultiFunctionDescriptor,
     destination_path: str,
@@ -1595,7 +1603,9 @@ def save_multifunction(
         model_path = v[0]
         src_func_name = v[1]
         prog = modelpath_to_pymil[model_path]
-        multifunction_prog.add_function(target_func_name, prog.functions[src_func_name])
+        _ct.utils._multifunction_program_append_unifunction_program(
+            multifunction_prog, prog, src_func_name, target_func_name
+        )
 
         # get the corresponding function description from the spec
         spec = modelpath_to_spec_and_weightdir[model_path][0]

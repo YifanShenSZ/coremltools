@@ -32,6 +32,11 @@ def _quantize_general(
     torch_dtype_var: Var,
     axis: int = None,
 ):
+    if input.op is not None and input.op.op_type.startswith("constexpr_"):
+        # Skip already quantized weight, which was done by using compression metadata.
+        context.add(input, node.name)
+        return
+
     scale = scale_var.val
     if scale is None:
         raise ValueError("quantization scale must be const at compile time")

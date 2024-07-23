@@ -7,31 +7,28 @@ For an overview, see Optimizing Models Post-Training
 (`Compressing ML Program Weights <https://coremltools.readme.io/docs/compressing-ml-program-weights>`_
 and `Compressing Neural Network Weights <https://coremltools.readme.io/docs/quantization>`_).
 
-
-PyTorch
+Post-Training Compression
 -------------------------
 
-Compression for PyTorch models:
+Post-training compression for Core ML models:
 
 .. toctree::
    :maxdepth: 1
    
-   coremltools.optimize.torch.palettization.rst
-   coremltools.optimize.torch.pruning.rst
-   coremltools.optimize.torch.quantization.rst
-   coremltools.optimize.torch.examples.rst
+   coremltools.optimize.coreml.post_training_quantization.rst
+   coremltools.optimize.coreml.config.rst
 
 
-Core ML
+Training-Time Compression
 -------------------------
 
-Compression for Core ML models:
+Training-time compression for PyTorch models:
 
 .. toctree::
    :maxdepth: 1
+   
+   coremltools.optimize.torch.pruning.rst
+   coremltools.optimize.torch.palettization.rst
+   coremltools.optimize.torch.quantization.rst
+   coremltools.optimize.torch.examples.rst
 
-
-   coremltools.optimize.coreml.palettization.rst
-   coremltools.optimize.coreml.pruning.rst
-   coremltools.optimize.coreml.quantization.rst
-   coremltools.optimize.coreml.utilities.rst

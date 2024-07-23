@@ -29,5 +29,4 @@ sympy
 typing
 urllib3
 torch>=1.13.0
-scikit-learn
 pillow

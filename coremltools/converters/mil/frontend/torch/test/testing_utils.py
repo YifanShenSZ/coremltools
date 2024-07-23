@@ -17,8 +17,7 @@ from coremltools._deps import _HAS_EXECUTORCH, _HAS_TORCH_EXPORT_API, _IS_MACOS
 from coremltools.converters.mil.mil.types.type_mapping import nptype_from_builtin
 from coremltools.converters.mil.testing_utils import ct_convert, validate_minimum_deployment_target
 
-from ..torchscript_utils import torch_to_mil_types
-from ..utils import TorchFrontend
+from ..utils import TORCH_DTYPE_TO_MIL_DTYPE, TorchFrontend
 
 if _HAS_TORCH_EXPORT_API:
     from torch.export import ExportedProgram
@@ -99,7 +98,7 @@ def convert_to_mlmodel(
         elif isinstance(inputs, TensorType):
             return inputs
         elif isinstance(inputs, torch.Tensor):
-            return TensorType(shape=inputs.shape, dtype=torch_to_mil_types[inputs.dtype])
+            return TensorType(shape=inputs.shape, dtype=TORCH_DTYPE_TO_MIL_DTYPE[inputs.dtype])
         else:
             raise ValueError(
                 "Unable to parse type {} into InputType.".format(type(inputs))
@@ -153,12 +152,43 @@ def generate_input_data(
         return random_data(input_size, dtype)
 
 
-def trace_model(model, input_data):
-    model.eval()
-    if isinstance(input_data, list):
-        input_data = tuple(input_data)
-    torch_model = torch.jit.trace(model, input_data)
-    return torch_model
+def export_torch_model_to_frontend(
+    model,
+    input_data,
+    frontend,
+    use_scripting=False,
+    use_edge_dialect=True,
+):
+    input_data_clone = _copy_input_data(input_data)
+    if isinstance(input_data_clone, list):
+        input_data_clone = tuple(input_data_clone)
+    elif isinstance(input_data_clone, torch.Tensor):
+        input_data_clone = (input_data_clone,)
+
+    if frontend == TorchFrontend.TORCHSCRIPT:
+        model.eval()
+        if use_scripting:
+            model_spec = torch.jit.script(model)
+        else:
+            model_spec = torch.jit.trace(model, input_data_clone)
+
+    elif frontend == TorchFrontend.EXIR:
+        try:
+            model.eval()
+        except NotImplementedError:
+            # Some torch.export stuff, e.g. quantization, has not implemented eval() yet
+            logger.warning("PyTorch EXIR converter received a model without .eval method")
+        model_spec = torch.export.export(model, input_data_clone)
+        if use_edge_dialect:
+            model_spec = executorch.exir.to_edge(model_spec).exported_program()
+
+    else:
+        raise ValueError(
+            "Unknown value of frontend. Needs to be either TorchFrontend.TORCHSCRIPT "
+            f"or TorchFrontend.EXIR. Provided: {frontend}"
+        )
+
+    return model_spec
 
 
 def flatten_and_detach_torch_results(torch_results):
@@ -284,30 +314,9 @@ class TorchBaseTest:
         if input_as_shape:
             input_data = generate_input_data(input_data, rand_range, input_dtype, torch_device)
 
-        if frontend == TorchFrontend.TORCHSCRIPT:
-            model.eval()
-            if use_scripting:
-                model_spec = torch.jit.script(model)
-            else:
-                model_spec = trace_model(model, _copy_input_data(input_data))
-        elif frontend == TorchFrontend.EXIR:
-            try:
-                model.eval()
-            except NotImplementedError:
-                # Some torch.export stuff, e.g. quantization, has not implemented eval() yet
-                logger.warning("PyTorch EXIR converter received a model without .eval method")
-            input_data_clone = _copy_input_data(input_data)
-            if isinstance(input_data_clone, list):
-                input_data_clone = tuple(input_data_clone)
-            elif isinstance(input_data_clone, torch.Tensor):
-                input_data_clone = (input_data_clone,)
-            model_spec = torch.export.export(model, input_data_clone)
-            if use_edge_dialect:
-                model_spec = executorch.exir.to_edge(model_spec).exported_program()
-        else:
-            raise ValueError(
-                f"Unknown value of frontend. Needs to be either TorchFrontend.TORCHSCRIPT or TorchFrontend.EXIR. Provided: {frontend}"
-            )
+        model_spec = export_torch_model_to_frontend(
+            model, input_data, frontend, use_scripting, use_edge_dialect
+        )
 
         model_spec, mlmodel, coreml_inputs, coreml_results = convert_and_compare(
             input_data,

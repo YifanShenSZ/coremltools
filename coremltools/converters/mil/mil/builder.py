@@ -15,7 +15,12 @@ from coremltools.converters.mil._deployment_compatibility import AvailableTarget
 from coremltools.converters.mil.mil.types.symbolic import any_symbolic
 
 from .block import Function, curr_block
-from .input_type import InternalInputType, ListOrTensorInputType, TensorInputType, TupleInputType
+from .input_type import (
+    InternalInputType,
+    ListOrTensorOrDictInputType,
+    TensorInputType,
+    TupleInputType,
+)
 from .program import Placeholder, StateTensorPlaceholder
 from .scope import (
     SCOPE_STACK,
@@ -152,7 +157,7 @@ class Builder:
                 update_dict[k] = var
                 continue
 
-            if isinstance(in_type, (TensorInputType, ListOrTensorInputType)):
+            if isinstance(in_type, (TensorInputType, ListOrTensorOrDictInputType)):
                 var = cls._add_const(val, new_var_name, before_op)
                 update_dict[k] = var
 

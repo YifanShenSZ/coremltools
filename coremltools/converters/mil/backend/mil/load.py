@@ -87,6 +87,13 @@ class MILProtoExporter:
         self.weight_id_to_file_value = {}  # mapping from weight_id to file value
         self.prog.validate(check_essential_scope=True)
 
+    @staticmethod
+    def _get_valid_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Get a valid kwargs to initialize a MILProtoExporter object.
+        """
+        return {"prog": kwargs["prog"], "weights_dir": kwargs["weights_dir"]}
+
     def translate_program_attributes(self) -> Dict[str, Any]:
         """
         Get the program attributes which need to be exported to mil proto.
@@ -1040,9 +1047,11 @@ def load(
         )
 
     # convert pymil program into mil proto
+    kwargs["prog"] = prog
+    kwargs["weights_dir"] = weights_dir
+    exporter_kwargs = MILProtoExporter._get_valid_kwargs(kwargs)
     mil_proto_exporter = MILProtoExporter(
-        prog,
-        weights_dir,
+        **exporter_kwargs,
     )
     mil_proto = mil_proto_exporter.export(specification_version)
 
