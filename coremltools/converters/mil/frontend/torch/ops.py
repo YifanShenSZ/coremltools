@@ -4878,8 +4878,8 @@ def index_put(context, node):
                 "only torch.index_put(..., accumulate=False) handled yet"
             )
 
-        begin = [0] * x.rank
-        end = list(x.shape)
+        begin = [0.0] * x.rank
+        end = [float(size) for size in x.shape]
         stride = [1] * x.rank
         begin_mask = [True] * x.rank
         end_mask = [True] * x.rank
@@ -4892,13 +4892,16 @@ def index_put(context, node):
             if index is not None:
                 if len(index.shape) > 0:
                     index = mb.squeeze(x=index)
+                    index = mb.cast(x=index, dtype="fp32")
                 begin[dim] = index
-                end[dim] = mb.add(x=index, y=1)
+                end[dim] = mb.add(x=index, y=1.0)
                 begin_mask[dim] = False
                 end_mask[dim] = False
                 is_dim_unity[dim] = True
         begin = mb.concat(values=begin, axis=0)
         end = mb.concat(values=end, axis=0)
+        begin = mb.cast(x=begin, dtype="int32")
+        end = mb.cast(x=end, dtype="int32")
 
         expected_values_shape = []
         for dim in range(x.rank):
@@ -5118,13 +5121,13 @@ def index(context, node):
     if len(indices_axes) == 1:
         axis = indices_axes[0]
         indices = valid_indices[0]
-        if is_current_opset_version_compatible_with(target.iOS17):
-            # IOS17 `gather` behaviour is undefined for negative indices.
-            indices = mb.select(
-                cond=mb.greater_equal(x=indices, y=0),
-                a=indices,
-                b=mb.add(x=indices, y=value_at(mb.shape(x=x), axis)),
-            )
+        # if is_current_opset_version_compatible_with(target.iOS17):
+        #     # IOS17 `gather` behaviour is undefined for negative indices.
+        #     indices = mb.select(
+        #         cond=mb.greater_equal(x=indices, y=0),
+        #         a=indices,
+        #         b=mb.add(x=indices, y=value_at(mb.shape(x=x), axis)),
+        #     )
         x = _utils._construct_gather_op("gather", x, indices, axis, name=node.name)
         context.add(x)
         return
